@@ -49,12 +49,17 @@ class Position:
         If set, a *second* measurement is performed after the typed one,
         restricted to this mask. This is the n_C box in Figure 2 — the
         per-position unary/concept label.
+    concept_teacher : Tensor | None
+        If set (and `concept_mask` is set), the concept measurement is
+        teacher-forced to this index. Shape (B,). Mirrors `teacher` for
+        the concept (class) measurement.
     """
 
     nu: Tensor | None = None
     typed_mask: Tensor | None = None
     teacher: Tensor | None = None
     concept_mask: Tensor | None = None
+    concept_teacher: Tensor | None = None
 
 
 @dataclass
@@ -100,8 +105,8 @@ def decode_chain(
 
     The `commit` argument is the default for non-teacher-forced positions.
     A `Position` with `teacher` set always uses commit="teacher" at the
-    typed step regardless of this default. The concept measurement (when
-    present) uses `commit` — concept teacher-forcing isn't supported yet.
+    typed step regardless of this default. A `Position` with `concept_teacher`
+    set always uses commit="teacher" at the concept step.
 
     Parameters
     ----------
@@ -143,7 +148,12 @@ def decode_chain(
 
         concept: MeasureOutput | None = None
         if pos.concept_mask is not None:
-            concept = tb.measure(q, mask=pos.concept_mask, commit=commit)
+            if pos.concept_teacher is not None:
+                concept = tb.measure(
+                    q, mask=pos.concept_mask, commit="teacher", teacher_k=pos.concept_teacher
+                )
+            else:
+                concept = tb.measure(q, mask=pos.concept_mask, commit=commit)
             q = concept.q
 
         outputs.append(PositionOutput(typed=typed, concept=concept))
