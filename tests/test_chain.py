@@ -156,6 +156,50 @@ def test_decode_chain_initial_q_carries_through() -> None:
     )
 
 
+def test_decode_chain_concept_teacher_forced() -> None:
+    """concept_teacher forces the concept measurement to the given index."""
+    groups = IndexGroups.from_sizes([("entity", 6), ("concept", 4)])
+    tb = make_tb(num_indices=groups.num_indices)
+    ent_mask = groups.mask("entity")
+    con_mask = groups.mask("concept")
+    concept_teacher = torch.tensor([7, 8])  # global indices inside concept group [6,10)
+
+    out = decode_chain(
+        tb,
+        [Position(typed_mask=ent_mask, concept_mask=con_mask, concept_teacher=concept_teacher)],
+        commit="argmax",
+        batch_size=2,
+        device=torch.device("cpu"),
+    )
+    pos = out.positions[0]
+    assert pos.concept is not None
+    assert (pos.concept.k == concept_teacher).all()
+    # Typed measurement is not teacher-forced — it's argmax, should be in entity range.
+    assert (pos.typed.k < 6).all()
+
+
+def test_decode_chain_concept_teacher_logits_still_masked() -> None:
+    """Concept logits respect concept_mask even when teacher-forced."""
+    groups = IndexGroups.from_sizes([("entity", 6), ("concept", 4)])
+    tb = make_tb(num_indices=groups.num_indices)
+    ent_mask = groups.mask("entity")
+    con_mask = groups.mask("concept")
+    concept_teacher = torch.tensor([7])  # inside concept range
+
+    out = decode_chain(
+        tb,
+        [Position(typed_mask=ent_mask, concept_mask=con_mask, concept_teacher=concept_teacher)],
+        commit="argmax",
+        batch_size=1,
+        device=torch.device("cpu"),
+    )
+    logits = out.positions[0].concept.logits[0]
+    # Entity positions (0-5) should be masked to -inf.
+    assert torch.isinf(logits[:6]).all()
+    # Concept positions should be finite.
+    assert logits[6:10].isfinite().all()
+
+
 def test_decode_chain_grad_flow_through_concept() -> None:
     """Gradients flow back to TB parameters through both typed and concept measurements."""
     groups = IndexGroups.from_sizes([("a", 5), ("b", 5)])

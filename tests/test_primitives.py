@@ -226,6 +226,43 @@ def test_fixed_alpha_is_buffer() -> None:
     assert tb.alpha in dict(tb.named_buffers()).values()
 
 
+def test_learnable_beta_is_parameter() -> None:
+    from tb.primitives import learnable_beta
+
+    tb = TB(
+        dim=8,
+        index_layer=IndexLayer(num_indices=10, dim=8),
+        evolve_module=QTBEvolve(dim=8, hidden=4),
+        beta=learnable_beta(1.0),
+    )
+    assert isinstance(tb.beta, nn.Parameter)
+    assert tb.beta.requires_grad
+    assert any(p is tb.beta for p in tb.parameters())
+
+
+def test_fixed_beta_is_buffer() -> None:
+    tb = make_tb()
+    assert not isinstance(tb.beta, nn.Parameter)
+    assert tb.beta in dict(tb.named_buffers()).values()
+
+
+def test_learnable_beta_affects_update() -> None:
+    """Changing β scales the outcome contribution in q ← α q + β a_k."""
+    from tb.primitives import learnable_beta
+
+    tb = TB(
+        dim=8,
+        index_layer=IndexLayer(num_indices=10, dim=8),
+        evolve_module=QTBEvolve(dim=8, hidden=4),
+        alpha=1.0,
+        beta=learnable_beta(2.0),
+    )
+    q = torch.zeros(1, 8)
+    out = tb.measure(q, commit="argmax")
+    expected = 2.0 * tb.index_layer.embed(out.k)
+    assert torch.allclose(out.q, expected, atol=1e-6)
+
+
 def test_groups_with_measure_mask() -> None:
     """IndexGroups.mask works as a measure mask."""
     groups = IndexGroups.from_sizes([("ent", 6), ("pred", 4)])
