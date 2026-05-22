@@ -200,3 +200,12 @@ def learnable_alpha(initial: float = 1.0) -> nn.Parameter:
     in their config). Use this to pass into `TB(..., alpha=learnable_alpha())`.
     """
     return nn.Parameter(torch.tensor(float(initial)))
+
+
+def learnable_beta(initial: float = 1.0) -> nn.Parameter:
+    """Convenience: a learnable scalar β for the outcome contribution.
+
+    Symmetric to `learnable_alpha`. Use when you want the model to discover
+    the right prior/outcome balance on both sides of `q ← α q + β a_k`.
+    """
+    return nn.Parameter(torch.tensor(float(initial)))

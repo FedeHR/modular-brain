@@ -10,7 +10,7 @@ from tb.composers import (
 )
 from tb.evolve import EvolveModule, QTBEvolve, TBEvolve
 from tb.indices import IndexGroups, IndexLayer
-from tb.primitives import TB, Commit, MeasureOutput, learnable_alpha
+from tb.primitives import TB, Commit, MeasureOutput, learnable_alpha, learnable_beta
 
 __all__ = [
     "TB",
@@ -28,4 +28,5 @@ __all__ = [
     "decode_chain",
     "decode_triple",
     "learnable_alpha",
+    "learnable_beta",
 ]
