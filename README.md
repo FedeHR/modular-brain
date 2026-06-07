@@ -75,3 +75,23 @@ The three modes settle to different learned values of α:
 
 This is consistent with the QTB §7.3 framing of α as a "prior strength" knob.
 
+
+## TODO / things to test: 
+
+1. Modernize building blocks
+  1. SAM instead of bounding boxes
+  2. xLSTM / Mamba (state space models in general) instead of the RNN dynamic context layer
+  3. Deep stacking between the representation and index layers
+
+2. Creating and testing new datasets
+  1. Ergo3D: millions of first-person videos, could test semantic and episodic memory, entitiy consistency and many other properties
+  2. Knowledge graph datasets (ICEWS and similar, PyKEEN) as a simple benchmark for small experiments
+  3. Action Genome
+
+3. Implementing components which were only mentioned in the TB / QTB papers
+  1. Grounding: explicit top-down inference
+
+4. Testing general DL hypotheses from the QTB papers / related ideas
+  1. Role of unistochastic matrices: convergence towards them, see Sinkformer and recent DeepSeek mHC paper
+  2. Skip connections as Bayesian priors: how far can we take this hypothesis? How can we make it more precise?
+  3. Testing the practical effect of the one-brain hypothesis
