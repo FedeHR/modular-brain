@@ -84,7 +84,7 @@ This is consistent with the QTB §7.3 framing of α as a "prior strength" knob.
   3. Deep stacking between the representation and index layers
 
 2. Creating and testing new datasets
-  1. Ergo3D: millions of first-person videos, could test semantic and episodic memory, entitiy consistency and many other properties
+  1. Ergo3D: millions of first-person videos, could test semantic and episodic memory, entity consistency and many other properties
   2. Knowledge graph datasets (ICEWS and similar, PyKEEN) as a simple benchmark for small experiments
   3. Action Genome
 
