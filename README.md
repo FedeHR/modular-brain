@@ -76,6 +76,45 @@ The three modes settle to different learned values of α:
 This is consistent with the QTB §7.3 framing of α as a "prior strength" knob.
 
 
+## Dataset enrichment (PVSG)
+
+We use **PVSG** (panoptic video scene graphs: real video, tracked instance masks,
+126 object classes = 115 thing + 11 stuff, 57 relations). PVSG's labels are flat,
+so we add a hierarchy. We keep the enrichment to *one deterministic, inspectable
+step* and separate three label layers so complexity does not compound:
+
+- **A — Object taxonomy (we add this).** Three automatic levels per class from
+  **WordNet**, no hand-curation: `leaf` (the PVSG class) → `mid` (a fixed
+  depth-from-root cut: `car → conveyance`, `table → furnishing`, `bottle →
+  container`) → `coarse` (WordNet supersense: `→ artifact`). Disambiguation is
+  automatic (first physical-entity sense, so `table` → furniture not the data
+  table). The output is a 126-row table you can read and check by eye; unmappable
+  names (typos, the catch-all `others`) are surfaced, not guessed. WordNet is the
+  recognized standard (VRD-E, ImageNet, Visual Genome use it), so this stays
+  reproducible and comparable to prior work.
+- **B — Observed relations (already in PVSG).** The 57 real predicates annotated
+  on video. Rich and realistic by construction; we keep them as-is (they also
+  cluster natively into spatial / contact / interaction — a free predicate
+  grouping). We do **not** synthesize these.
+- **C — Background knowledge (optional, later).** Non-observed facts
+  (`dog is-a pet`, `dangerous`) — the modern replacement for VRD-E's hand-injected
+  `Dangerous/Harmless`. Trained only through the semantic-memory pathway, not
+  perception. Added only when a hypothesis needs the non-visual-prior effect.
+
+**Taxonomy source is swappable** behind one `Taxonomy` contract (levels +
+parent-maps + `IndexGroups`); switching sources touches no model code:
+
+1. **WordNet** — *current*. Offline, automatic, standard, zero hand-curation.
+2. **Wikidata (P279/P31)** — *TODO*. Live KG: subclass hierarchy **and** typed
+   relations (would supply A + C together). Heavier (entity-linking + API).
+3. **LLM-assisted tree** — *TODO, appendix only*. Cheapest to produce, but using
+   an LLM for the *ground-truth* taxonomy hurts reproducibility/credibility
+   (model drift, potential circularity), so keep it as a robustness check, not the
+   primary labels.
+
+Derivation code + a measured comparison to VRD-E's fixed B/P/G scheme live in
+`experiments/pvsg_hierarchy/`.
+
 ## TODO / things to test: 
 
 1. Modernize building blocks
