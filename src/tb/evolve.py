@@ -41,6 +41,19 @@ class EvolveModule(Protocol):
         ...
 
 
+class IdentityEvolve(nn.Module):
+    """Stateless pass-through: no dynamic context layer. Use for static
+    per-frame tasks that never call evolve, and as the context-layer ablation
+    in sequential ones — it contributes zero parameters either way."""
+
+    def forward(self, q: Tensor, state: object | None = None):
+        return q, state
+
+    def init_state(self, batch_size: int, device: torch.device) -> None:
+        del batch_size, device
+        return None
+
+
 class QTBEvolve(nn.Module):
     """Single-hidden-layer recurrence (QTB Eq. 27).
 
