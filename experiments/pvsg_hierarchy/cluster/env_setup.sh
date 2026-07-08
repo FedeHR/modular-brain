@@ -8,7 +8,7 @@ set -euo pipefail
 
 WORK="$(pwd)"                       # run this from your /nfs/data8/<you> directory
 echo ">> WORK=$WORK"
-mkdir -p "$WORK"/{torch_cache,hf_cache,uv_cache,cache,logs}
+mkdir -p "$WORK"/{torch_cache,hf_cache,uv_cache,cache,logs,trackio}
 
 # 1) uv — user-space, no sudo
 if ! command -v uv >/dev/null 2>&1; then
@@ -24,8 +24,12 @@ source .venv/bin/activate
 uv pip install -e .
 uv pip install imageio imageio-ffmpeg huggingface_hub
 # CUDA torch: check `nvidia-smi` on a GPU node first (srun), then pick the wheel.
-# cu121 suits recent drivers; use cu118 if nvidia-smi shows a CUDA 11 driver.
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# madeira GPU nodes: driver 535 = CUDA 12.2 max, GTX 1080 Ti = Pascal (sm_61)
+# -> cu121 wheel required (cu13x needs driver >=580; torch >=2.8 dropped Pascal).
+# Pinned because ANY later `uv pip install ...`/`uv sync` in this venv re-resolves
+# torch from the default index (cu130) and silently breaks CUDA — if you install
+# anything else later, RE-RUN this line and verify torch.version.cuda == '12.1'.
+uv pip install "torch==2.5.1" "torchvision==0.20.1" --index-url https://download.pytorch.org/whl/cu121
 
 # 3) pre-fetch DINO weights into the SHARED torch cache (offline-safe at job time)
 export TORCH_HOME="$WORK/torch_cache"

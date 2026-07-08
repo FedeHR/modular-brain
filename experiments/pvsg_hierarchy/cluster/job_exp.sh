@@ -22,6 +22,11 @@ cd "$WORK/modular-brain"
 
 nvidia-smi
 
+# Fail fast if the torch wheel can't see the GPU we reserved (--gres=gpu:1);
+# a wheel/driver mismatch otherwise falls back to CPU *silently*.
+python -c "import torch; assert torch.cuda.is_available(), \
+  f'CUDA unavailable (torch {torch.__version__}, wheel cuda {torch.version.cuda}) — wrong wheel for this node/driver'"
+
 MODULE="$1"; shift
 # --device defaults to auto -> CUDA on the node
 python -m "experiments.pvsg_hierarchy.$MODULE" "$@"

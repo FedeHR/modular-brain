@@ -13,7 +13,7 @@ Output format (superset of the old one; `pvsg_data.py` reads rel[:3]):
       "videos": [
         {"video_id": ..., "split": ...,
          "num_frames": int | null,
-         "objects":   [{"id": object_id, "category": category}, ...],
+         "objects":   [{"id": object_id, "cat": category}, ...],
          "relations": [[s_id, o_id, predicate, [[start, end], ...]], ...]},
         ...
       ]
@@ -91,7 +91,7 @@ def main() -> None:
         num_frames = v.get("num_frames", meta.get("num_frames"))
         objects = [
             {"id": int(o.get("object_id", o.get("id")) if isinstance(o, dict) else o[0]),
-             "category": str(o["category"] if isinstance(o, dict) else o[1])}
+             "cat": str(o["category"] if isinstance(o, dict) else o[1])}
             for o in v.get("objects", [])
         ]
         relations = [list(_rel_fields(rel)) for rel in v.get("relations", [])]

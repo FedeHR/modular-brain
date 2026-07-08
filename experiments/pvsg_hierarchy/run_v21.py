@@ -382,8 +382,8 @@ def run(table: PairTable, vs: VideoSpace | None = None, *, eval_frac: float = 0.
                         commit=COMMIT_OF_MODE[mode], classes=cfg["classes"],
                         order=order, dropout=dropout)
                 for s, t in lg.items():
-                    outs.setdefault(s, []).append(t)
-        return {s: torch.cat(t).cpu() for s, t in outs.items()}
+                    outs.setdefault(s, []).append(t.cpu())   # free GPU per chunk
+        return {s: torch.cat(t) for s, t in outs.items()}
 
     def offset_of(name: str, slot: str) -> int:
         """flat emits group-local logits; everything else global ones."""
@@ -463,7 +463,13 @@ def run(table: PairTable, vs: VideoSpace | None = None, *, eval_frac: float = 0.
             "pred_hits3": hits3, "n_unknown_pairs": int((~known).sum()),
         }
 
+    peak_gb = (torch.cuda.max_memory_allocated(dev) / 1e9
+               if dev.type == "cuda" else None)
+    if peak_gb is not None:
+        print(f"  peak GPU: {peak_gb:.2f} GB")
+
     return {"models": results, "n_rows": int(keep.sum()), "n_skipped": n_skipped,
+            "peak_gpu_gb": peak_gb,
             "n_train": int(train.sum()), "n_eval": n_ev,
             "n_eval_rows": int(eval_.sum()), "n_eval_multi": n_multi,
             "n_entity": n_entity, "losses": losses,
