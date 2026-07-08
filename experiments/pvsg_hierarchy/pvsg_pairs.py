@@ -71,6 +71,32 @@ class VideoFrames:
         return sorted(self._row_of.get(oid, {}))
 
 
+class UnionFrames:
+    """(subject, object, frame) -> cached union-box predicate feature, or None.
+    Loaded from a `precompute_unions` cache; frames are mask indices, matching
+    `build_pair_table`'s frame keys."""
+
+    def __init__(self, blob: dict, *, normalize: bool = True) -> None:
+        self._row_of: dict[tuple[int, int], dict[int, int]] = {}
+        self._feats: dict[tuple[int, int], Tensor] = {}
+        for so, rec in blob["unions"].items():
+            feats = rec["feats"].float()
+            self._feats[so] = _norm(feats) if normalize else feats
+            self._row_of[so] = {f: k for k, f in enumerate(rec["frames"])}
+
+    def feat(self, subj: int, obj: int, frame: int) -> Tensor | None:
+        row = self._row_of.get((subj, obj), {}).get(frame)
+        return None if row is None else self._feats[(subj, obj)][row]
+
+
+def load_union_frames(video: str, union_dir: str | Path,
+                      **kw) -> UnionFrames | None:
+    pt = Path(union_dir) / f"{video}.pt"
+    if not pt.exists():
+        return None
+    return UnionFrames(torch.load(pt, map_location="cpu"), **kw)
+
+
 def load_video_frames(video: str, cache_dir: str | Path, timelines_dir: str | Path,
                       **kw) -> VideoFrames | None:
     """None if either artifact is missing for this video, or if the video is
@@ -96,14 +122,18 @@ class PairStats:
     n_misaligned_objects: int = 0    # cache rows != timeline visible frames
     n_unknown_pred: int = 0          # span/boundary predicate outside the
                                      # official 57-predicate vocabulary
+    n_union_fallback: int = 0        # rows with no cached union feature -> f_s+f_o
     missing_videos: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
-        return (f"pairs: {self.n_rows} rows from {self.n_spans} spans | "
-                f"skipped frames {self.n_skipped_frames} | "
-                f"misaligned objects {self.n_misaligned_objects} | "
-                f"unknown-predicate spans {self.n_unknown_pred} | "
-                f"missing videos {len(self.missing_videos)}")
+        s = (f"pairs: {self.n_rows} rows from {self.n_spans} spans | "
+             f"skipped frames {self.n_skipped_frames} | "
+             f"misaligned objects {self.n_misaligned_objects} | "
+             f"unknown-predicate spans {self.n_unknown_pred} | "
+             f"missing videos {len(self.missing_videos)}")
+        if self.n_union_fallback:
+            s += f" | union fallbacks {self.n_union_fallback}"
+        return s
 
 
 @dataclass
@@ -118,6 +148,8 @@ class PairTable:
     subj_ids: list[int]
     obj_ids: list[int]
     stats: PairStats
+    feat_u: Tensor | None = None    # [M, D] union-box predicate feature, when
+                                    # a union cache is supplied (else None)
 
 
 def _group_spans(spans: list[RelationSpan]) -> dict[str, list[RelationSpan]]:
@@ -130,13 +162,20 @@ def _group_spans(spans: list[RelationSpan]) -> dict[str, list[RelationSpan]]:
 def build_pair_table(spans: list[RelationSpan], cs: ConceptSpace,
                      cache_dir: str | Path, timelines_dir: str | Path, *,
                      videos: list[str] | None = None, mask_stride: int = 1,
-                     frame_stride: int = 1, normalize: bool = True) -> PairTable:
+                     frame_stride: int = 1, normalize: bool = True,
+                     union_dir: str | Path | None = None) -> PairTable:
     """All (relation, frame) rows inside the given spans, at `frame_stride`
-    granularity along each span."""
+    granularity along each span.
+
+    If `union_dir` is given, a per-row union-box predicate feature (`feat_u`) is
+    also emitted from that cache. Rows with no cached union feature fall back to
+    f_s + f_o, so the row set is identical to the no-union table — the two only
+    differ in the predicate input, keeping the comparison controlled."""
     by_video = _group_spans(spans)
     wanted = videos if videos is not None else sorted(by_video)
     stats = PairStats()
     fs, fo, pg, vids, frames_, sids, oids = [], [], [], [], [], [], []
+    fu: list[Tensor] | None = [] if union_dir is not None else None
 
     for video in wanted:
         vf = load_video_frames(video, cache_dir, timelines_dir,
@@ -144,6 +183,8 @@ def build_pair_table(spans: list[RelationSpan], cs: ConceptSpace,
         if vf is None:
             stats.missing_videos.append(video)
             continue
+        uf = (load_union_frames(video, union_dir, normalize=normalize)
+              if union_dir is not None else None)
         stats.n_misaligned_objects += len(vf.misaligned)
         for sp in by_video.get(video, []):
             if ("predicate", sp.predicate) not in cs.label_to_global:
@@ -158,6 +199,12 @@ def build_pair_table(spans: list[RelationSpan], cs: ConceptSpace,
                     continue
                 fs.append(a)
                 fo.append(b)
+                if fu is not None:
+                    u = uf.feat(sp.subj_id, sp.obj_id, frame) if uf else None
+                    if u is None:
+                        stats.n_union_fallback += 1
+                        u = a + b
+                    fu.append(u)
                 pg.append(cs.gindex("predicate", sp.predicate))
                 vids.append(video)
                 frames_.append(frame)
@@ -170,7 +217,8 @@ def build_pair_table(spans: list[RelationSpan], cs: ConceptSpace,
     stats.n_rows = len(fs)
     return PairTable(feat_s=torch.stack(fs), feat_o=torch.stack(fo),
                      pred_g=torch.tensor(pg), videos=vids, frames=frames_,
-                     subj_ids=sids, obj_ids=oids, stats=stats)
+                     subj_ids=sids, obj_ids=oids, stats=stats,
+                     feat_u=torch.stack(fu) if fu is not None else None)
 
 
 @dataclass

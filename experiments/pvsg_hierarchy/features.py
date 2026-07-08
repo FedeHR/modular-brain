@@ -70,6 +70,30 @@ def pool_region(dense: Tensor, mask: Tensor, patch: int) -> Tensor | None:
     return (dense * cov[..., None]).sum(dim=(0, 1)) / total
 
 
+def _bbox(mask: Tensor) -> tuple[int, int, int, int] | None:
+    """(y0, x0, y1, x1) inclusive bounding box of a boolean mask, or None."""
+    ys, xs = torch.nonzero(mask, as_tuple=True)
+    if ys.numel() == 0:
+        return None
+    return int(ys.min()), int(xs.min()), int(ys.max()), int(xs.max())
+
+
+def pool_union_box(dense: Tensor, mask_a: Tensor, mask_b: Tensor,
+                   patch: int) -> Tensor | None:
+    """Pool patch features over the UNION BOUNDING BOX of two masks — the
+    paper's f(BB_pred) (Sec 4.6): the box enclosing both participants, so the
+    region *between* them (where the relation lives) is included, unlike a plain
+    mask union. Returns (D,) or None if either mask is empty."""
+    ba, bb = _bbox(mask_a), _bbox(mask_b)
+    if ba is None or bb is None:
+        return None
+    y0, x0 = min(ba[0], bb[0]), min(ba[1], bb[1])
+    y1, x1 = max(ba[2], bb[2]), max(ba[3], bb[3])
+    box = torch.zeros_like(mask_a, dtype=torch.bool)
+    box[y0:y1 + 1, x0:x1 + 1] = True
+    return pool_region(dense, box, patch)
+
+
 def extract_frame(
     extractor: RegionFeatureExtractor, image01: Tensor, pan_mask: np.ndarray
 ) -> dict[int, Tensor]:
@@ -88,6 +112,26 @@ def extract_frame(
         if f is not None:
             feats[int(oid)] = f
     return feats
+
+
+def extract_frame_unions(
+    extractor: RegionFeatureExtractor, image01: Tensor, pan_mask: np.ndarray,
+    pairs,
+) -> dict[tuple[int, int], Tensor]:
+    """Union-box feature per (subject, object) pair present in this frame. Shares
+    one dense-grid pass across all requested pairs. `pairs` is an iterable of
+    (subj_id, obj_id); a pair is emitted only if both masks cover ≥1 patch."""
+    img = prep_image(image01, extractor.patch)
+    dense = extractor.dense(img)
+    _, ih, iw = img.shape
+    mask_t = torch.from_numpy(np.ascontiguousarray(pan_mask))[None, None].float()
+    mask_rs = F.interpolate(mask_t, size=(ih, iw), mode="nearest")[0, 0]
+    out: dict[tuple[int, int], Tensor] = {}
+    for s, o in pairs:
+        f = pool_union_box(dense, mask_rs == s, mask_rs == o, extractor.patch)
+        if f is not None:
+            out[(int(s), int(o))] = f
+    return out
 
 
 def aggregate_instance(per_frame: list[Tensor]) -> Tensor:

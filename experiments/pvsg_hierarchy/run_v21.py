@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import time
 
 import torch
 import torch.nn.functional as F
@@ -235,8 +236,9 @@ def run(table: PairTable, vs: VideoSpace | None = None, *, eval_frac: float = 0.
         seed: int = 0, steps: int = 400, batch: int = 2048, lr: float = 5e-3,
         cs=None, kg_model: str | None = None, kg_epochs: int = 100,
         kg_dim: int = 64, split: str = "triple", train_commit: str = "integral",
-        dropout: float = 0.5, beta: str = "learned",
-        device: str | None = None, log_step=None):
+        dropout: float = 0.5, beta: str = "learned", nu: str = "sum",
+        device: str | None = None, log_step=None, log_every: int = 25,
+        dump_preds: str | None = None):
     torch.manual_seed(seed)
     dev = pick_device(device)
     if vs is None:
@@ -255,7 +257,15 @@ def run(table: PairTable, vs: VideoSpace | None = None, *, eval_frac: float = 0.
     scls, ocls = class_targets(table, vs)
     n_skipped = int((~keep).sum())
     fs, fo = table.feat_s[keep], table.feat_o[keep]
-    nu_p = nu_predicate(fs, fo)
+    if nu == "union":
+        if table.feat_u is None:
+            raise ValueError("nu='union' needs a union cache "
+                             "(build_pair_table union_dir=...)")
+        nu_p = table.feat_u[keep]                 # f(BB_pred), Algorithm 1 l.29
+    elif nu == "sum":
+        nu_p = nu_predicate(fs, fo)                # symmetric fallback ν = fs+fo
+    else:
+        raise ValueError(f"unknown nu mode {nu!r}")
     tgt = {"subject": subj_g[keep], "object": obj_g[keep],
            "predicate": table.pred_g[keep]}
     for i, lvl in enumerate(LEVELS):
@@ -305,7 +315,14 @@ def run(table: PairTable, vs: VideoSpace | None = None, *, eval_frac: float = 0.
             return SLOTS
         return SLOTS + CLASS_SLOTS
 
-    def train_model(name: str) -> list[float]:
+    n_models = len(models)
+    total_steps = n_models * steps
+    t0 = time.perf_counter()
+    steps_done = 0                                   # global, across models
+    diverged: dict[str, bool] = {}
+
+    def train_model(name: str, mi: int) -> list[float]:
+        nonlocal steps_done
         model = models[name]
         model.train()
         cfg = btn_cfg.get(name)
@@ -313,6 +330,7 @@ def run(table: PairTable, vs: VideoSpace | None = None, *, eval_frac: float = 0.
         g = torch.Generator().manual_seed(seed + 1)
         losses: list[float] = []
         step = 0
+        t_model = time.perf_counter()
         while step < steps:
             for idx in torch.randperm(n_tr, generator=g).split(batch):
                 if step >= steps:
@@ -340,16 +358,45 @@ def run(table: PairTable, vs: VideoSpace | None = None, *, eval_frac: float = 0.
                 loss.backward()
                 # uniform gradient-norm clipping: the dynamic context layer is
                 # an RNN and its wide configuration explodes at this lr without
-                # it. Applied to every condition identically (no confound).
-                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                # it. Applied to every condition identically (no confound). The
+                # returned pre-clip norm is our divergence signal.
+                gnorm = float(nn.utils.clip_grad_norm_(model.parameters(), 1.0))
                 opt.step()
-                losses.append(loss.item())
-                if log_step is not None:
-                    log_step({f"loss/{name}": losses[-1]}, step)
+                lval = loss.item()
+                losses.append(lval)
                 step += 1
+                steps_done += 1
+                if not math.isfinite(lval) and not diverged.get(name):
+                    diverged[name] = True
+                    print(f"  !! {name}: non-finite loss at step {step} "
+                          f"(gnorm {gnorm:.1f}) — training is diverging",
+                          flush=True)
+                if step % log_every == 0 or step == steps:
+                    recent = losses[-log_every:]
+                    sm = sum(recent) / len(recent)
+                    elapsed = time.perf_counter() - t0
+                    rate = steps_done / elapsed
+                    eta = (total_steps - steps_done) / max(rate, 1e-9)
+                    print(f"  [{mi}/{n_models}] {name:13} "
+                          f"{step:>4}/{steps} | loss {sm:8.3f} | "
+                          f"gnorm {gnorm:7.2f} | {rate:5.1f} it/s | "
+                          f"ETA {eta / 60:4.1f}m", flush=True)
+                    if log_step is not None:
+                        log_step({f"loss/{name}": sm, f"gnorm/{name}": gnorm,
+                                  "progress/it_per_s": rate,
+                                  "progress/eta_min": eta / 60}, steps_done)
+        dt = time.perf_counter() - t_model
+        print(f"  [{mi}/{n_models}] {name:13} done in {dt / 60:4.1f}m | "
+              f"loss {losses[0]:.2f} -> {losses[-1]:.2f}", flush=True)
         return losses
 
-    losses = {name: train_model(name) for name in models}
+    print(f"training {n_models} models x {steps} steps "
+          f"(batch {batch}, {n_tr} train rows) on {dev}", flush=True)
+    losses = {name: train_model(name, i + 1)
+              for i, name in enumerate(models)}
+    print(f"training done in {(time.perf_counter() - t0) / 60:.1f}m; "
+          f"evaluating on {int(eval_.sum())} eval rows...", flush=True)
+    t_eval = time.perf_counter()
 
     # --- evaluation (deduped multi-label groups, as V2) ----------------------
     keys = pair_frame_keys(table, keep)
@@ -426,8 +473,12 @@ def run(table: PairTable, vs: VideoSpace | None = None, *, eval_frac: float = 0.
         "pred_acc_osp": metrics("BTN", lg_osp)["acc"]["predicate"],
     }
 
+    print(f"eval done in {(time.perf_counter() - t_eval) / 60:.1f}m", flush=True)
+
     # annotation-only KGE prior (identical to run_v2's block)
     if kg_model:
+        print(f"training {kg_model} KGE prior...", flush=True)
+        t_kge = time.perf_counter()
         from experiments.pvsg_hierarchy.kg_baseline import (
             predicate_scores,
             train_kge,
@@ -462,11 +513,17 @@ def run(table: PairTable, vs: VideoSpace | None = None, *, eval_frac: float = 0.
                     "predicate": hits1},
             "pred_hits3": hits3, "n_unknown_pairs": int((~known).sum()),
         }
+        print(f"KGE prior done in {(time.perf_counter() - t_kge) / 60:.1f}m",
+              flush=True)
+
+    if dump_preds:
+        _dump_predictions(dump_preds, models, batched_logits, keys, rep,
+                          ev_sets, prd_slice, cs, split, seed)
 
     peak_gb = (torch.cuda.max_memory_allocated(dev) / 1e9
                if dev.type == "cuda" else None)
     if peak_gb is not None:
-        print(f"  peak GPU: {peak_gb:.2f} GB")
+        print(f"  peak GPU: {peak_gb:.2f} GB", flush=True)
 
     return {"models": results, "n_rows": int(keep.sum()), "n_skipped": n_skipped,
             "peak_gpu_gb": peak_gb,
@@ -480,9 +537,64 @@ def run(table: PairTable, vs: VideoSpace | None = None, *, eval_frac: float = 0.
             "config": {"split": split, "eval_frac": eval_frac, "seed": seed,
                        "steps": steps, "batch": batch, "lr": lr,
                        "train_commit": train_commit, "dropout": dropout,
-                       "beta": beta,
+                       "beta": beta, "nu": nu,
                        "kg_model": kg_model, "kg_epochs": kg_epochs,
                        "kg_dim": kg_dim, "device": str(dev)}}
+
+
+# --- per-pair prediction dump (for qualitative panels) -------------------------
+
+def _dump_predictions(path, models, batched_logits, keys, rep, ev_sets,
+                      prd_slice, cs, split, seed) -> None:
+    """Write one JSON record per eval group: its (video, frame, subject,
+    object) identity, the true-predicate SET, and BTN vs P-Direct top-3
+    predicted predicates. Consumed by qual_v21 to draw grounded panels.
+
+    Correctness anchors: `keys[rep[i]]` is the (video, frame, subj_id, obj_id)
+    of eval group i (same indexing group_eval used to build ev_sets). BTN and
+    P-Direct read predicates over the FULL index layer (masked to the predicate
+    group), so their top-k indices are already global — no slice shift (matches
+    metrics()'s offset_of == 0 for every non-flat condition). prd_slice is kept
+    only as a sanity bound.
+    """
+    import json
+
+    cs = cs or build_concept_space()
+    inv_pred = {g: lbl for (lvl, lbl), g in cs.label_to_global.items()
+                if lvl == "predicate"}
+    instances, _ = load_instances(cs=cs)
+    leaf_of = {(i.video, i.obj_id): i.leaf for i in instances}
+
+    def top3(name):
+        lg = batched_logits(name, "samp")["predicate"]        # [n_ev, n_index]
+        idx = lg.topk(3, dim=-1).indices                      # already global
+        assert (idx >= prd_slice.start).all() and (idx < prd_slice.stop).all(), \
+            "predicate top-k fell outside the predicate group"
+        return idx.tolist()
+    btn3, pdir3 = top3("BTN"), top3("P-Dir")
+
+    recs = []
+    for i, (r, tset) in enumerate(zip(rep, ev_sets)):
+        video, frame, sid, oid = keys[r]
+        gold = sorted(tset)
+        recs.append({
+            "video": video, "frame": int(frame),
+            "subj_id": int(sid), "obj_id": int(oid),
+            "subj_leaf": leaf_of.get((video, sid)),
+            "obj_leaf": leaf_of.get((video, oid)),
+            "true_preds": [inv_pred[g] for g in gold],
+            "btn_top3": [inv_pred[g] for g in btn3[i]],
+            "pdir_top3": [inv_pred[g] for g in pdir3[i]],
+            "btn_correct": btn3[i][0] in tset,
+            "pdir_correct": pdir3[i][0] in tset,
+        })
+    from pathlib import Path
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(json.dumps(
+        {"split": split, "seed": seed, "n": len(recs), "records": recs}, indent=0))
+    n_ok = sum(r["btn_correct"] for r in recs)
+    print(f"dumped {len(recs)} eval-pair predictions to {path} "
+          f"(BTN top-1 correct {n_ok}/{len(recs)})", flush=True)
 
 
 # --- reporting -----------------------------------------------------------------
@@ -555,6 +667,11 @@ def main() -> None:
     ap.add_argument("--beta", choices=("learned", "fixed"), default="learned",
                     help="commit scale: 'learned' (official train_scale) or "
                          "'fixed' β = 1 (Algorithm 1's unscaled commit)")
+    ap.add_argument("--nu", choices=("sum", "union"), default="sum",
+                    help="predicate bottom-up input ν_p: 'sum' (f_s+f_o) or "
+                         "'union' (f(BB_pred) from --union-dir, Algorithm 1 l.29)")
+    ap.add_argument("--union-dir", default=None,
+                    help="precompute_unions cache dir; required for --nu union")
     ap.add_argument("--kg-model", default="DistMult",
                     help="PyKEEN model for the annotation-only prior; "
                          "'none' disables it")
@@ -562,14 +679,23 @@ def main() -> None:
     ap.add_argument("--kg-dim", type=int, default=64)
     ap.add_argument("--out", default="results/v21")
     ap.add_argument("--device", default="auto", help="auto|cpu|mps|cuda")
+    ap.add_argument("--log-every", type=int, default=25,
+                    help="steps between progress lines (loss/gnorm/it-per-s/ETA)"
+                         " to stdout and trackio")
+    ap.add_argument("--dump-preds", default=None,
+                    help="write per-eval-pair BTN/P-Dir predictions to this JSON "
+                         "(one file per run; seed appended) for qual_v21 panels")
     ap.add_argument("--no-trackio", dest="trackio", action="store_false",
                     help="disable trackio logging (on by default)")
     args = ap.parse_args()
+    if args.nu == "union" and not args.union_dir:
+        ap.error("--nu union requires --union-dir")
 
     cs = build_concept_space()
     spans = load_relation_spans()
     table = build_pair_table(spans, cs, args.cache, args.timelines,
-                             frame_stride=args.frame_stride)
+                             frame_stride=args.frame_stride,
+                             union_dir=args.union_dir)
     print(table.stats.summary())
     print(f"device: {pick_device(args.device)}")
     kg = None if args.kg_model.lower() == "none" else args.kg_model
@@ -581,8 +707,12 @@ def main() -> None:
             r = run(table, cs=cs, split=args.split, eval_frac=args.eval_frac,
                     seed=seed, steps=args.steps, batch=args.batch, lr=args.lr,
                     train_commit=args.train_commit, dropout=args.dropout,
-                    beta=args.beta, kg_model=kg, kg_epochs=args.kg_epochs,
-                    kg_dim=args.kg_dim, device=args.device, log_step=log)
+                    beta=args.beta, nu=args.nu, kg_model=kg,
+                    kg_epochs=args.kg_epochs,
+                    kg_dim=args.kg_dim, device=args.device, log_step=log,
+                    log_every=args.log_every,
+                    dump_preds=(f"{args.dump_preds}.seed{seed}.json"
+                                if args.dump_preds else None))
             log({**{f"p1/{n}": m["acc"]["predicate"]
                     for n, m in r["models"].items()},
                  **{f"p3/{n}": m["pred_hits3"] for n, m in r["models"].items()}})
