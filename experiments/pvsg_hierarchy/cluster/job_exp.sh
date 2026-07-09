@@ -18,6 +18,7 @@ source "$WORK/modular-brain/.venv/bin/activate"
 export TORCH_HOME="$WORK/torch_cache"
 export HF_HOME="$WORK/hf_cache"
 export TRACKIO_DIR="$WORK/trackio"    # sqlite DBs; fetch_results.sh pulls them home
+export PYTHONUNBUFFERED=1             # stream progress lines to the log live (tail -f)
 cd "$WORK/modular-brain"
 
 nvidia-smi

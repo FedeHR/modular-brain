@@ -15,9 +15,8 @@ Only (s, o) pairs that appear in a relation span are computed, and only the mask
 frames those spans touch are decoded. Batches over a videos/masks tree like
 `precompute_all` and is resumable (finished `<id>.pt` are skipped).
 
-    # cluster, all videos:
+    # cluster, all videos (--videos/--masks default to the madeira paths):
     python -m experiments.pvsg_hierarchy.precompute_unions \
-        --videos $WORK/pvsg/VidOR/videos --masks $WORK/pvsg/VidOR/masks \
         --out $WORK/unions --model dinov2_vitb14 --device cuda
     # local smoke on one video:
     python -m experiments.pvsg_hierarchy.precompute_unions \
@@ -30,7 +29,6 @@ from __future__ import annotations
 import argparse
 from collections import defaultdict
 from pathlib import Path
-
 import numpy as np
 import torch
 from PIL import Image
@@ -42,6 +40,13 @@ from experiments.pvsg_hierarchy.features import (
 )
 from experiments.pvsg_hierarchy.precompute_features import load_image
 from experiments.pvsg_hierarchy.pvsg_data import load_relation_spans
+
+# Unzipped OpenPVSG VidOR tree on the madeira cluster; the default extraction
+# targets. Override --videos/--masks for a local run (e.g. data/videos, data/masks).
+CLUSTER_VIDEOS = ("/nfs/data8/harjes/pvsg/VidOR/mnt/lustre/jkyang/CVPR23/"
+                  "openpvsg/data/vidor/videos")
+CLUSTER_MASKS = ("/nfs/data8/harjes/pvsg/VidOR/mnt/lustre/jkyang/CVPR23/"
+                 "openpvsg/data/vidor/masks")
 
 
 def active_pairs_by_frame(spans, subvideo: str) -> dict[int, set[tuple[int, int]]]:
@@ -106,8 +111,10 @@ def precompute_unions(masks_dir, extractor, *, frames_dir=None, mp4=None,
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--videos", required=True, help="dir of <id>.mp4 (or a single mp4)")
-    ap.add_argument("--masks", required=True, help="dir of <id>/ mask folders")
+    ap.add_argument("--videos", default=CLUSTER_VIDEOS,
+                    help="dir of <id>.mp4 (default: madeira cluster path)")
+    ap.add_argument("--masks", default=CLUSTER_MASKS,
+                    help="dir of <id>/ mask folders (default: madeira cluster path)")
     ap.add_argument("--out", required=True, help="output dir for <id>.pt union caches")
     ap.add_argument("--only", default=None, help="restrict to one video id (local test)")
     ap.add_argument("--model", default="dinov2_vitb14")
