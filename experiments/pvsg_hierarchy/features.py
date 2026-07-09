@@ -134,6 +134,21 @@ def extract_frame_unions(
     return out
 
 
+def extract_frame_scene(
+    extractor: RegionFeatureExtractor, image01: Tensor
+) -> Tensor:
+    """Whole-frame ("scene") feature — the paper's f(scene) / f(BB) over the
+    complete-scene bounding box (TB §6.3, Alg. 1 line 6, `q̃_T ← u·f(scene)`).
+
+    Pooled the same way as the per-object and union-box features (mask-weighted
+    mean of DINO patches, here over a uniform all-ones mask), so f(scene),
+    f(BB_sub), f(BB_obj) and f(BB_pred) all share one feature statistic and can
+    feed the same representation-layer projection `u·f(·)`. Returns (D,)."""
+    img = prep_image(image01, extractor.patch)
+    dense = extractor.dense(img)  # (gh, gw, D)
+    return dense.reshape(-1, dense.shape[-1]).mean(dim=0)
+
+
 def aggregate_instance(per_frame: list[Tensor]) -> Tensor:
     """Pool an instance's per-frame features into one vector (H1). Stack instead
     for H2."""
